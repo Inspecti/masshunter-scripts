@@ -1,0 +1,119 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+// PubchemCASFromName - Searches Pubchem for library name entry and replaces CAS number and common name 
+// Works in Agilent MassHunter Library Editor
+// https://github.com/Inspecti/masshunter-scripts/
+//
+//
+///////////////////////////////////////////////////////////////////////////////
+
+//! <script>
+//!  <language>CSharp</language>
+//!  <reference>System.Drawing.dll</reference>
+//!  <reference>System.Xml.dll</reference>
+//!  <import>System</import>
+//!  <import>System.Drawing</import>
+//!  <import>System.Text</import>
+//!  <import>System.IO</import>
+//!  <import>System.Text.RegularExpressions</import>
+//!  <import>System.Collections.Generic</import>
+//!  <import>System.Net</import>
+//!  <import>System.Windows.Forms</import>
+//!  <import>System.Xml</import>
+//!  <import>System.Xml.XPath</import>
+//! </script>
+
+int substanceCount = this.MainForm.CompoundGridPane.RowCount;
+string message = "";
+Regex casRegex = new Regex(@"\b[1-9]{1}[0-9]{1,5}-\d{2}-\d\b"); // RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+this.ScriptProgress.Marquee = false;
+this.ScriptProgress.ProgressStep = 1;
+this.ScriptProgress.ProgressMaximum = substanceCount;
+System.Text.StringBuilder builder = new System.Text.StringBuilder();
+
+for (int i = 0; i < substanceCount; i++)
+{
+  int compoundId = MainForm.CompoundGridPane.GetCompoundId(i);
+  string compoundName = (string)LibraryAccess.GetCompoundProperty(compoundId,"CompoundName");
+
+  message = String.Format("Retrieving compound {0}/{1}...", i, substanceCount);
+  this.ScriptProgress.Message = message;
+  this.ScriptProgress.ProgressValue = i + 1;
+
+  WebRequest webRequest = null;
+  WebResponse webResponse = null;
+  Stream stream = null;
+  StreamReader reader = null;
+
+  ServicePointManager.Expect100Continue = true;
+  ServicePointManager.SecurityProtocol = (SecurityProtocolType) 3072;
+  ServicePointManager.DefaultConnectionLimit = 9999;
+  ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls11 | SecurityProtocolType.Tls12 | SecurityProtocolType.Tls13;
+
+  // PUG REST API docs: https://pubchemdocs.ncbi.nlm.nih.gov/pug-rest
+  //
+  // Examples of simple requests:
+  // https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/<substance>/property/MolecularFormula/TXT
+  // https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/<substance>/synonyms/TXT
+
+  string url = String.Format("https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/{0}/synonyms/TXT", compoundName);
+  string responseString = "";
+  List<string> synonymList = new List<string>(); 
+
+  try
+  {
+    webRequest = System.Net.WebRequest.Create(url);
+    webRequest.Timeout = 10000;
+
+    webResponse = webRequest.GetResponse();
+    stream = webResponse.GetResponseStream();
+    reader = new System.IO.StreamReader(stream);
+    responseString = reader.ReadToEnd();
+  }
+  catch(System.Net.WebException e)
+  {
+    message += ("... Failed: " + e.Message);
+    this.ScriptProgress.Message = message;
+    builder.AppendLine(message);
+  }
+  finally
+  {
+    if(null != stream) stream.Close();
+    if(null != webResponse) webResponse.Close();
+  }
+
+  string[] responseValues = responseString.Split(Environment.NewLine.ToCharArray());
+  synonymList.AddRange(responseValues);
+
+  foreach (string synonym in synonymList)
+  {
+    if (casRegex.IsMatch(synonym))
+    {
+      SetCompoundProperty( new Agilent.MassSpectrometry.DataAnalysis.LibraryEdit.Commands.CompoundProperty[]{ new Agilent.MassSpectrometry.DataAnalysis.LibraryEdit.Commands.CompoundProperty(compoundId,"CASNumber", synonym)});
+      SetCompoundProperty( new Agilent.MassSpectrometry.DataAnalysis.LibraryEdit.Commands.CompoundProperty[]{ new Agilent.MassSpectrometry.DataAnalysis.LibraryEdit.Commands.CompoundProperty(compoundId,"CompoundName", synonymList[0])});
+      break;
+    }
+  }
+
+  builder.AppendLine(compoundId.ToString() + " " + compoundName + " " + synonymList[0]);
+}
+
+// Form form = new System.Windows.Forms.Form();
+// form.StartPosition = System.Windows.Forms.FormStartPosition.CenterParent;
+// form.MinimizeBox = false;
+// form.MaximizeBox = false;
+// form.ShowIcon = false;
+// form.ShowInTaskbar = false;
+
+// TextBox textBox = new System.Windows.Forms.TextBox();
+// textBox.ReadOnly = true;
+// textBox.Dock = System.Windows.Forms.DockStyle.Fill;
+// textBox.Multiline = true;
+// textBox.WordWrap = false;
+// textBox.ScrollBars = System.Windows.Forms.ScrollBars.Both;
+// textBox.Text = builder.ToString();
+// textBox.Select(0,0);
+
+// form.Controls.Add(textBox);
+// form.ShowDialog(MainForm);
