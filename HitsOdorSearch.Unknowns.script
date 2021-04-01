@@ -1,0 +1,332 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+// HitsOdorSearch - Retrieves odor description of identified substances from Good Scents Company  
+// Works in Agilent MassHunter Unknowns Analysis, loosely based on Agilent "Export CEF"-script
+// https://github.com/Inspecti/masshunter-scripts/
+//
+// TODO: Loadbar window that shows progress of search on longer queries
+//
+///////////////////////////////////////////////////////////////////////////////
+
+//-----------------------------------------------------------------------------
+//! <script>
+//!  <name>Export Hits As CSV</name>
+//!  <language>CSharp</language>
+//!  <reference>System.dll</reference>
+//!  <reference>System.Xml.dll</reference>
+//!  <reference>System.Windows.Forms.dll</reference>
+//!  <reference>System.ComponentModel.dll</reference>
+//!  <reference>UnknownsAnalysisII.dll</reference>
+//!  <reference>UnknownsAnalysisDataSet.dll</reference>
+//!  <import>System</import>
+//!  <import>System.Xml</import>
+//!  <import>System.Windows.Forms</import>
+//!  <import>System.Reflection</import>
+//!	 <import>System.Drawing</import>
+//!  <import>System.Collections.Generic</import>
+//!  <import>System.ComponentModel</import>
+//!  <import>Agilent.MassSpectrometry.DataAnalysis.UnknownsAnalysisII</import>
+//!  <import>System.IO</import>
+//!  <import>System.Threading</import>
+//!  <import>System.Net</import>
+//!  <import>System.Text.RegularExpressions</import>
+//! </script>
+//-----------------------------------------------------------------------------
+
+try
+{
+	const short ExportAllHits = 1;
+	const short ExportChoice = ExportAllHits;
+	const char csvSeparator = ';';
+
+	const int nameIndexInCsv = 0;
+	const int CASIndexInCsv = 3;
+	const int compAreaIndexInCsv = 4;
+
+	const int nameIndexInCache = 0;
+	const int CASIndexInCache = 1;
+	const int odorDescIndexInCache = 2;
+
+	bool containsHeader = false;
+	bool bestHitsOnly = true;
+	bool loadWindowEnable = false;
+
+	UnknownsAnalysisDataSet.BatchDataTable batches = UIState.UADataAccess.GetBatches();
+	if ((0 == batches.Count) || (!UIState.HasAnalysis))
+	{
+		System.Windows.Forms.MessageBox.Show("Please open an Analysis first.", null,
+			MessageBoxButtons.OK, MessageBoxIcon.Information);
+		return;
+	}
+
+	string batchDirectory = null;
+	string cefOutputFolderName = null;
+	if (!string.IsNullOrEmpty(UIState.BatchFolder))
+	{
+		batchDirectory = UIState.BatchFolder;
+		cefOutputFolderName = UIState.BatchFolder;
+	}
+
+	int batchID = batches[0].BatchID;
+	UnknownsAnalysisDataSet.SampleDataTable samples = UIState.UADataAccess.GetSamples(batchID);
+
+	foreach (var sample in samples)
+	{
+		int sampleID = sample.SampleID;
+		string dataFilePath = sample.DataPathName;
+		string fileName = "";
+		List<string[]> compoundList = new List<string[]>();
+
+		if (!sample.IsDataFileNameNull())
+		{
+			fileName = sample.DataFileName;
+		}
+		else
+		{
+			System.Windows.Forms.MessageBox.Show("Cannot read sample file name.", null, MessageBoxButtons.OK, MessageBoxIcon.Information);
+			return;
+		}
+
+		UnknownsAnalysisDataSet.ComponentDataTable components = UIState.UADataAccess.GetComponents(batchID, sampleID);
+		UnknownsAnalysisDataSet.HitDataTable allHits = UIState.UADataAccess.GetHits(batchID, sampleID);
+
+		string csvFileName = fileName;
+		csvFileName = Path.ChangeExtension(fileName, null); // remove extension for editing filename
+		csvFileName = Path.ChangeExtension(csvFileName+"_odor", ".csv"); // add *_odor.csv" to the name
+
+
+
+		foreach (UnknownsAnalysisDataSet.ComponentRow componentRow in components)
+		{
+			if (componentRow.IsPrimaryHitIDNull() && (ExportChoice==ExportAllHits))
+				continue;
+			if (bestHitsOnly && componentRow.IsBestHitNull())
+				continue;
+			if (bestHitsOnly && !componentRow.IsBestHitNull() && !componentRow.BestHit)
+				continue;
+
+			double? compoundRT = null;
+			double? area = null;
+			double? height = null;
+			double? width = null;
+			string casId = null;
+			string compoundName = null;
+			string molecularFormula = null;
+			double? libraryMatchScore = null;
+
+			int componentID = componentRow.ComponentID;
+			int deconvolutionMethodID = componentRow.DeconvolutionMethodID;
+
+			if (!componentRow.IsPrimaryHitIDNull())
+			{
+				System.Data.DataRow[] hits = allHits.Select(
+						string.Format("DeconvolutionMethodID={0} AND ComponentID={1} AND HitID={2}",
+							deconvolutionMethodID, componentID, componentRow.PrimaryHitID));
+
+				if (hits.Length == 1)
+				{
+					if (!hits[0].IsNull("CASNumber")) casId = (string)hits[0]["CASNumber"];
+					if (!hits[0].IsNull("CompoundName")) compoundName = (string)hits[0]["CompoundName"];
+					if (!hits[0].IsNull("Formula")) molecularFormula = (string)hits[0]["Formula"];
+					if (!hits[0].IsNull("LibraryMatchScore")) libraryMatchScore = (double)hits[0]["LibraryMatchScore"];
+				}
+			}
+
+			if (!componentRow.IsRetentionTimeNull())
+				compoundRT = componentRow.RetentionTime;
+
+			if (!componentRow.IsAreaNull())
+			{
+				area = componentRow.Area;
+			}
+
+			if (!componentRow.IsHeightNull())
+			{
+				height = componentRow.Height;
+			}
+
+			if(!String.IsNullOrEmpty(compoundName)){
+				string[] compoundLine = {compoundName, compoundRT.ToString(), libraryMatchScore.ToString(), casId, molecularFormula, area.ToString(), "Odor description placeholder"};
+				compoundList.Add(compoundLine);
+			}
+		}
+
+		// Read search cache
+		List<string[]> cacheContent = new List<string[]>();
+		string appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+		string cachePath = appDataPath + @"\MassHunter\Unknowns\OdorSearch\cache.csv";
+
+		if (File.Exists(cachePath))
+		{
+			using (var cacheReader = new StreamReader(cachePath))
+			{
+				while (!cacheReader.EndOfStream)
+				{
+					string[] cacheLine = (cacheReader.ReadLine()).Split(csvSeparator);
+					cacheContent.Add(cacheLine);
+				}
+			}
+		}
+
+		string pubChemApiUrl = "https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/";
+		string goodScentsCASUrl = "http://www.thegoodscentscompany.com/search3.php?qName=";
+
+		int currentCounter = 0;
+		int compoundListLength = compoundList.Count;
+
+		// Initialize BackgroundWorker to work with the form
+		//System.ComponentModel.BackgroundWorker backgroundWorker = new System.ComponentModel.BackgroundWorker();
+
+		//this.backgroundWorker.DoWork += new System.ComponentModel.DoWorkEventHandler(this.backgroundWorker1_DoWork);
+
+		// Create a new instance of the form.
+		System.Windows.Forms.Form loadWindowForm = new System.Windows.Forms.Form();
+		System.Windows.Forms.Button button1 = new System.Windows.Forms.Button ();
+		System.Windows.Forms.Label label1 = new System.Windows.Forms.Label();
+
+		label1.Text = "Searching, progress " + currentCounter + "/" + compoundListLength;
+
+		loadWindowForm.Text = "Searching";
+		loadWindowForm.FormBorderStyle = FormBorderStyle.FixedDialog;
+		loadWindowForm.MaximizeBox = false;
+		loadWindowForm.MinimizeBox = false;
+		loadWindowForm.CancelButton = button1;
+		loadWindowForm.StartPosition = FormStartPosition.CenterScreen;
+
+		loadWindowForm.Controls.Add(label1);
+		if (loadWindowEnable) loadWindowForm.Show();
+
+		foreach (string[] compoundLine in compoundList)
+		{
+			string[] newCacheLine = {"","",""};
+			newCacheLine[nameIndexInCache] = compoundLine[nameIndexInCsv];
+
+			if (loadWindowEnable){
+					try
+					{
+						currentCounter++;
+						label1.Text = "Searching, progress " + currentCounter + "/" + compoundListLength;
+						//button1.Text = "Cancel";
+						//loadWindowForm.Controls.Add(button1);
+						label1.Refresh();
+					}
+					catch(Exception e){
+						throw;
+					}
+			}
+
+			// If cache has match, don't search from Pubchem
+			bool matchFoundFromCache = false;
+
+			//System.Windows.Forms.MessageBox.Show(line[nameIndexInCsv]);
+			//System.Windows.Forms.MessageBox.Show(line[CASIndexInCsv]);
+
+			//if ((line[CASIndexInCsv] == "") || (line[CASIndexInCsv] == "0-00-0"))
+			//{
+			foreach (string[] cacheLine in cacheContent)
+			{
+				if (cacheLine[nameIndexInCache].ToLower() == compoundLine[nameIndexInCsv].ToLower())
+				{
+					compoundLine[CASIndexInCsv] = cacheLine[CASIndexInCache];
+					compoundLine[CASIndexInCsv + 3] = cacheLine[odorDescIndexInCache];
+					matchFoundFromCache = true;
+					break;
+				}
+			}
+			//}
+
+			// If compoundLine has no CAS, query data from web
+			if (!matchFoundFromCache)
+			{
+
+				// Get CAS data with substance name from Pubchem
+				try
+				{
+					var webClient = new WebClient();
+					var synonyms = webClient.DownloadString(pubChemApiUrl + compoundLine[nameIndexInCsv] + "/synonyms/txt");
+					string[] synonymsArr = synonyms.Split('\n');
+
+					Regex casRegex = new Regex(@"\b[1-9]{1}[0-9]{1,5}-\d{2}-\d\b");
+						foreach(string ln in synonymsArr)
+						{
+							if (casRegex.IsMatch(ln))
+							{
+								compoundLine[CASIndexInCsv] = ln;
+								break;
+							}
+						}
+				}
+				catch(WebException webEx)
+				{
+					compoundLine[CASIndexInCsv] = "";
+				}
+				newCacheLine[CASIndexInCache] = compoundLine[CASIndexInCsv];
+
+
+				// Fetch odor description from Good Scents Company
+				string odorDescription = "";
+				try
+				{
+					var webClient = new WebClient();
+					var response = webClient.DownloadString(goodScentsCASUrl + compoundLine[CASIndexInCsv]);
+					string[] responseStringArray =  response.Split(new [] { "lstw11" }, StringSplitOptions.None);
+					
+					if (responseStringArray.Length > 1 && responseStringArray[1] != "")
+					{
+						odorDescription = responseStringArray[1].Split('<')[0];
+						odorDescription = odorDescription.Remove(0, 2);
+					}
+					compoundLine[CASIndexInCsv + 3] = odorDescription;
+					
+					// Append searched data to cache
+					newCacheLine[odorDescIndexInCache] = odorDescription;
+				}
+				catch(WebException webEx)
+				{
+						odorDescription = "";
+				}
+				cacheContent.Add(newCacheLine);
+			}
+		}
+
+		// Write to CSV
+		using (StreamWriter file = new StreamWriter(dataFilePath + "\\" +  csvFileName))
+		{
+			// CSV header row
+			file.WriteLine("Substance" + csvSeparator + 
+							"RT" + csvSeparator +
+							"Library Match" + csvSeparator +
+							"CAS" + csvSeparator +
+							"Formula" + csvSeparator +
+							"Component Area" + csvSeparator +
+							"Odor description (GSC)");
+			// CSV data rows
+			foreach(string[] compoundLine in compoundList)
+			{
+				file.WriteLine(	compoundLine[0] + csvSeparator + // Substance 
+							    compoundLine[1] + csvSeparator + // Retention time
+								compoundLine[2] + csvSeparator + // Library Match
+								compoundLine[3] + csvSeparator + // CAS number
+								compoundLine[4] + csvSeparator + // Formula
+								compoundLine[5] + csvSeparator + // Component Area
+								compoundLine[6]); // Odor Description (Good Scents Company)
+			}
+		}
+
+		// Write query data to cache
+		using (StreamWriter file = new StreamWriter(cachePath))
+		{
+			foreach(string[] cacheLine in cacheContent)
+			{
+				file.WriteLine(	cacheLine[nameIndexInCache] + csvSeparator + // Cached filename
+								cacheLine[CASIndexInCache] + csvSeparator +  // Chaced CAS
+								cacheLine[odorDescIndexInCache]); // Cached odor description
+			}
+		}
+	}
+}
+
+catch(Exception exception)
+{
+	throw;
+}
