@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Report>
+  <Copyright>Agilent Technologies, Inc. (c) 2013</Copyright>
+  <Language>CSharp</Language>
+  <ProviderOptions>
+    <Name>CompilerVersion</Name>
+    <Value>v4.0</Value>
+  </ProviderOptions>
+  <References>
+    <Reference>System.Xml.dll</Reference>
+    <Reference>System.Data.DataSetExtensions.dll</Reference>
+    <Reference>iTextSharp.dll</Reference>
+    <Reference>CoreCommand.dll</Reference>
+    <Reference>QuantUtils.dll</Reference>
+    <Reference>Quantitation.dll</Reference>
+    <Reference>AppCommandContext.dll</Reference>
+    <Reference>QuantReportScript.dll</Reference>
+    <Reference>UnknownsAnalysisDataSet.dll</Reference>
+    <Reference>UnknownsAnalysisII.dll</Reference>
+    <Reference>UnknownsAnalysisII.ReportResults.exe</Reference>
+  </References>
+  <Codes>
+    <Code>.\Codes\BatchPeaksCSV.cs</Code>
+  </Codes>
+  <Type>Agilent.MassSpectrometry.DataAnalysis.UnknownsAnalysisII.Report.QuantCSV</Type>
+
+  <PublishFormats>
+    <PublishFormat Name="CSV" Extension="csv"/>
+  </PublishFormats>
+</Report>
